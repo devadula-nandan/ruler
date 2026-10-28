@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Ruler</title>
+  <style>
+    /* Matches Chrome's own bubbles and menus (colors measured from them):
+       plain rows, bold section headings, full-width dividers, switches */
+    :root {
+      --bg: #ffffff; --fg: #1f1f1f; --muted: #474747; --rule: #c7c7c7; --hover: #ebebeb;
+      --primary: #0b57d0; --on-primary: #ffffff; --track: #e3e3e3; --outline: #747775; --error: #b3261e;
+      --ok: #24a148; --near: #d2a106; --bad: #da1e28;
+      color-scheme: light dark;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #1f1f1f; --fg: #e3e3e3; --muted: #c7c7c7; --rule: #5e5e5e; --hover: #363636;
+        --primary: #a8c7fa; --on-primary: #062e6f; --track: #363636; --outline: #8e918f; --error: #f2b8b5;
+        --ok: #42be65; --near: #f1c21b; --bad: #fa4d56;
+      }
+    }
+    * { box-sizing: border-box; }
+    /* Chrome draws extension popups in a plain opaque rectangle; the page
+       fills it edge to edge, as rounded corners would show the frame around them */
+    body { width: 320px; margin: 0; padding: 0 0 8px;
+      background: var(--bg); color: var(--fg);
+      font: 13px/20px system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
+
+    .row { display: flex; align-items: center; gap: 12px; min-height: 28px; padding: 0 20px; }
+    label.row { min-height: 32px; }
+    label.row, button.row { cursor: pointer; }
+    label.row:hover, button.row:hover { background: var(--hover); }
+    .row .text { flex: 1; min-width: 0; }
+    .key { color: var(--muted); white-space: nowrap; }
+
+    /* The on/off switch stays in reach while the rest scrolls */
+    header { position: sticky; top: 0; z-index: 1; background: var(--bg); border-bottom: 1px solid var(--rule); }
+    header .row { min-height: 40px; gap: 10px; }
+    header img { width: 18px; height: 18px; }
+    header .text { font-size: 14px; font-weight: 600; }
+    #state { margin-left: 6px; color: var(--muted); font-weight: 400; }
+
+    h2 { margin: 0; padding: 10px 20px 2px; font-size: 13px; font-weight: 600; }
+    hr { margin: 8px 0; border: 0; border-top: 1px solid var(--rule); }
+    #error { margin: -6px 20px 8px; color: var(--error); font-size: 12px; }
+
+    /* Material switch */
+    .switch { position: relative; flex: none; width: 36px; height: 20px; margin: 0;
+      appearance: none; border: 2px solid var(--outline); border-radius: 10px; background: var(--track);
+      cursor: pointer; transition: background 150ms, border-color 150ms; }
+    .switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px;
+      border-radius: 50%; background: var(--outline); transition: transform 150ms, background 150ms; }
+    .switch:checked { border-color: var(--primary); background: var(--primary); }
+    .switch:checked::after { transform: translateX(16px); background: var(--on-primary); }
+    .switch:disabled { opacity: 0.38; cursor: default; }
+    .switch:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+
+    .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
+    .dot.ok { background: var(--ok); }
+    .dot.near { background: var(--near); }
+    .dot.bad { background: var(--bad); }
+    code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+    button.row { width: 100%; border: 0; background: none; color: var(--primary); font: inherit; text-align: left; }
+
+    /* Collapsible sections, like Chrome's submenu rows with a chevron */
+    summary.row { min-height: 32px; cursor: pointer; list-style: none; }
+    summary.row::-webkit-details-marker { display: none; }
+    summary.row:hover { background: var(--hover); }
+    .chevron { flex: none; width: 16px; height: 16px; fill: var(--muted); transition: transform 150ms; }
+    details[open] .chevron { transform: rotate(90deg); }
+    details[open] > summary { font-weight: 600; }
+    details { padding-bottom: 0; }
+    details[open] { padding-bottom: 6px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="row">
+      <img src="icons/icon32.png" alt="">
+      <span class="text">Ruler<span id="state">Off</span></span>
+      <input type="checkbox" class="switch" id="toggle" aria-label="Turn on for this tab" disabled>
+    </div>
+    <p id="error" hidden></p>
+  </header>
+
+  <h2>Show</h2>
+  <label class="row"><span class="text">Typography</span><span class="key">T</span>
+    <input type="checkbox" class="switch" data-spec="typography"></label>
+  <label class="row"><span class="text">Color and contrast</span><span class="key">C</span>
+    <input type="checkbox" class="switch" data-spec="color"></label>
+  <label class="row"><span class="text">Spacing</span><span class="key">S</span>
+    <input type="checkbox" class="switch" data-spec="spacing"></label>
+  <label class="row"><span class="text">Border and focus</span><span class="key">B</span>
+    <input type="checkbox" class="switch" data-spec="border"></label>
+  <label class="row"><span class="text">Motion</span><span class="key">M</span>
+    <input type="checkbox" class="switch" data-spec="motion"></label>
+  <label class="row"><span class="text">2x grid</span><span class="key">G</span>
+    <input type="checkbox" class="switch" id="grid"></label>
+
+  <hr>
+  <details id="dots">
+  <summary class="row"><span class="text">Status dots</span>
+    <svg class="chevron" viewBox="0 0 16 16"><path d="M6 3.5 10.5 8 6 12.5 5 11.5 8.5 8 5 4.5z"/></svg></summary>
+  <div class="row"><i class="dot ok"></i><span class="text">Uses the token · contrast passes AA</span></div>
+  <div class="row" title="Won't follow theme changes"><i class="dot near"></i><span class="text">Hard-coded token value</span><span class="key"><code>≈ $token</code></span></div>
+  <div class="row"><i class="dot bad"></i><span class="text">No token · contrast fails AA</span></div>
+  </details>
+
+  <details id="keys">
+  <summary class="row"><span class="text">Shortcuts</span>
+    <svg class="chevron" viewBox="0 0 16 16"><path d="M6 3.5 10.5 8 6 12.5 5 11.5 8.5 8 5 4.5z"/></svg></summary>
+  <div class="row"><span class="text">Pick A, then B</span><span class="key">Click</span></div>
+  <div class="row"><span class="text">Measure from A to hover</span><span class="key">Hold <span data-key="alt">Alt</span></span></div>
+  <div class="row"><span class="text">Parent / back to child</span><span class="key">↑ ↓</span></div>
+  <div class="row"><span class="text">Freeze to see hover, focus, open</span><span class="key">F</span></div>
+  <div class="row"><span class="text">Pin a token card</span><span class="key"><span data-key="shift">Shift</span>+Click</span></div>
+  <div class="row"><span class="text">Copy all pinned cards</span><span class="key">A</span></div>
+  <div class="row"><span class="text">Clear picks, then pins, then off</span><span class="key">Esc</span></div>
+  <div class="row"><span class="text">Turn on or off</span><span class="key" id="shortcut"></span></div>
+  <button class="row" id="shortcuts">Change shortcut</button>
+  </details>
+
+  <script src="popup.js"></script>
+</body>
+</html>
