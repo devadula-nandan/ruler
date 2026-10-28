@@ -120,9 +120,15 @@ after a reload. The spec keys apply to every frame and are remembered.
 
 ## Releasing
 
-1. Bump `version` in `manifest.json`.
-2. Push a `v*` tag (for example `v1.3.1`). The `chrome-web-store-publish`
-   workflow builds the zip with `scripts/package.sh` and uploads it to the
-   Chrome Web Store.
-3. For the GitHub release download, run `./scripts/package.sh` and attach
-   `dist/ruler.zip` to the release, keeping that file name.
+In GitHub, open **Actions → chrome-web-store-publish → Run workflow**, pick
+`patch`, `minor` or `major`, and run it. The workflow bumps `version` in
+`manifest.json`, uploads the zip to the Chrome Web Store and submits it for
+review. Once the upload works, it pushes a `Release x.y.z` commit and a
+`vx.y.z` tag, and makes a GitHub release with `ruler.zip` attached. If the
+upload fails (for example while the last version is still in review),
+nothing is pushed.
+
+From the terminal: `gh workflow run chrome-web-store-publish -f bump=patch`.
+
+Pushing a `v*` tag yourself also publishes, without bumping, so bump
+`version` first (for example to `1.3.1`).
