@@ -20,7 +20,7 @@
 
   const state = {
     enabled: false,
-    raw: null, // deepest element under the pointer
+    raw: null, // deepest element or pseudo-element under the pointer
     hover: null, // element that will be picked; ArrowUp/Down moves it
     history: [], // children walked past with ArrowUp, for ArrowDown
     a: null,
@@ -209,8 +209,7 @@
       .row b { text-align: right; overflow-wrap: anywhere; }
       .sub { color: var(--muted); text-align: right; }
       .sec { margin-top: 6px; padding-top: 4px; border-top: 1px solid var(--rule);
-        color: var(--muted); letter-spacing: 0.5px; text-transform: uppercase; font-size: 10px; }
-      .hint { margin-top: 6px; padding-top: 4px; border-top: 1px solid var(--rule);
+        color: var(--muted); letter-spacing: 0.5px; text-transform: uppercase; font-size: 10px; }      .hint { margin-top: 6px; padding-top: 4px; border-top: 1px solid var(--rule);
         color: var(--muted); }
       .prompt { margin-top: 6px; color: var(--fg); }
       .dim { color: var(--muted); font-weight: 400; }
@@ -232,11 +231,40 @@
   const esc = (s) =>
     String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 
+  // A ::before or ::after stands in for an element with the element methods
+  // the ruler uses, so it can be hovered, picked, frozen and pinned. One
+  // object per pseudo-element, so picks and pins compare. (Checked with
+  // instanceof: Chrome's elements have a pseudo() method of their own.)
+  class PseudoTarget {
+    constructor(owner, pseudo) {
+      this.owner = owner;
+      this.pseudo = pseudo;
+    }
+
+    get isConnected() {
+      return this.owner.isConnected;
+    }
+
+    getBoundingClientRect() {
+      return pseudoRect(this.owner, getComputedStyle(this.owner, this.pseudo)) ?? this.owner.getBoundingClientRect();
+    }
+  }
+  const pseudoTargets = new WeakMap();
+  const pseudoTarget = (owner, pseudo) => {
+    const targets = pseudoTargets.get(owner) ?? {};
+    pseudoTargets.set(owner, targets);
+    return (targets[pseudo] ??= new PseudoTarget(owner, pseudo));
+  };
+  const pseudoOf = (target) => (target instanceof PseudoTarget ? target.pseudo : '');
+  const ownerOf = (target) => (target instanceof PseudoTarget ? target.owner : target);
+
   const parentOf = (el) =>
-    el.parentElement ??
-    (el.getRootNode() instanceof ShadowRoot ? el.getRootNode().host : null);
+    el instanceof PseudoTarget
+      ? el.owner
+      : el.parentElement ?? (el.getRootNode() instanceof ShadowRoot ? el.getRootNode().host : null);
 
   const describe = (el) => {
+    if (el instanceof PseudoTarget) return describe(el.owner) + el.pseudo;
     let name = el.tagName.toLowerCase();
     if (el.id) name += `#${el.id}`;
     const cls = [...el.classList].find((c) => !c.startsWith('ruler')) ?? '';
@@ -356,10 +384,17 @@
     return parts.map((p) => p.trim()).filter(Boolean);
   };
 
-  // Rough specificity (ids, classes, tags) of the matching selector, or -1
-  const specificity = (el, selectorText) => {
+  // Rough specificity (ids, classes, tags) of the matching selector, or -1.
+  // For a pseudo-element only selectors ending in it count, matched against
+  // the element without it: `.label::before` -> `.label`.
+  const specificity = (el, selectorText, pseudo = '') => {
     let best = -1;
-    for (const selector of splitTop(selectorText, /,/)) {
+    for (let selector of splitTop(selectorText, /,/)) {
+      if (pseudo) {
+        const end = selector.match(new RegExp(`::?${pseudo.slice(2)}$`));
+        if (!end) continue;
+        selector = selector.slice(0, end.index) || '*';
+      }
       try {
         if (!el.matches(selector)) continue;
       } catch {
@@ -375,13 +410,14 @@
     return best;
   };
 
-  // The style declaration that wins for any of props on el (inline style first)
-  const winningStyle = (el, props) => {
-    if (props.some((p) => el.style?.getPropertyValue(p))) return el.style;
+  // The style declaration that wins for any of props on el or its pseudo
+  // (inline style first; pseudo-elements have none)
+  const winningStyle = (el, props, pseudo = '') => {
+    if (!pseudo && props.some((p) => el.style?.getPropertyValue(p))) return el.style;
     let best = null;
     let bestScore = -1;
     for (const rule of rulesSetting(el.getRootNode(), props)) {
-      const score = specificity(el, rule.selectorText);
+      const score = specificity(el, rule.selectorText, pseudo);
       if (score >= 0 && score >= bestScore) {
         best = rule.style;
         bestScore = score;
@@ -400,8 +436,14 @@
 
   const firstValue = (style, props) => pickValue(props.map((p) => style?.getPropertyValue(p)));
 
-  // Declared value for props, walking up for inherited properties
-  const declared = (el, props, inherited = false) => {
+  // Declared value for props, walking up for inherited properties. A
+  // pseudo-element inherits from its own element, so the walk goes on from el.
+  const declared = (el, props, inherited = false, pseudo = '') => {
+    if (pseudo) {
+      const value = firstValue(winningStyle(el, props, pseudo), props);
+      if (value && !/^(inherit|unset)$/.test(value)) return value;
+      if (!inherited) return '';
+    }
     for (let node = el; node; node = inherited ? parentOf(node) : null) {
       const value = firstValue(winningStyle(node, props), props);
       if (value && !/^(inherit|unset)$/.test(value)) return value;
@@ -432,11 +474,11 @@
     ][side];
   };
 
-  const declaredSide = (el, cs, prop, side) => {
+  const declaredSide = (el, cs, prop, side, pseudo) => {
     const [axis, edge] = logicalSide(cs, side);
     const longhands = [`${prop}-${SIDES[side]}`, `${prop}-${axis}-${edge}`];
     const axisProp = `${prop}-${axis}`;
-    const style = winningStyle(el, [...longhands, axisProp, prop]);
+    const style = winningStyle(el, [...longhands, axisProp, prop], pseudo);
     // padding-inline: start [end]
     const axisParts = splitTop(style?.getPropertyValue(axisProp) ?? '', /\s/);
     const parts = splitTop(style?.getPropertyValue(prop) ?? '', /\s/);
@@ -450,14 +492,14 @@
   // One corner's radius, from its longhand, its logical longhand
   // (border-start-end-radius) or the border-radius shorthand
   const CORNERS = ['top-left', 'top-right', 'bottom-right', 'bottom-left'];
-  const declaredCorner = (el, cs, corner) => {
+  const declaredCorner = (el, cs, corner, pseudo) => {
     const [block, inline] = CORNERS[corner].split('-');
     const start = (inline === 'left') !== (cs.direction === 'rtl');
     const longhands = [
       `border-${CORNERS[corner]}-radius`,
       `border-${block === 'top' ? 'start' : 'end'}-${start ? 'start' : 'end'}-radius`,
     ];
-    const style = winningStyle(el, [...longhands, 'border-radius']);
+    const style = winningStyle(el, [...longhands, 'border-radius'], pseudo);
     // Horizontal radii only: "4px 8px / 2px" -> 4px 8px
     const parts = splitTop(splitTop(style?.getPropertyValue('border-radius') ?? '', /\//)[0] ?? '', /\s/);
     return pickValue([
@@ -585,13 +627,76 @@
     /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) ||
     [...el.childNodes].some((n) => n.nodeType === Node.TEXT_NODE && n.textContent.trim());
 
+  // ---------------------------------------------------------------------------
+  // Carbon draws checkbox and radio boxes and check marks as a label's
+  // ::before and ::after. They're never the pointer's target, so the one
+  // under the pointer is found from where it sits.
+
+  const PSEUDOS = ['::before', '::after'];
+
+  // Whether a pseudo-element draws anything. Carbon keeps an unchecked
+  // check mark around at scale(0).
+  const paints = (cs) =>
+    !/^(none|normal)$/.test(cs.content) &&
+    cs.display !== 'none' &&
+    cs.visibility !== 'hidden' &&
+    !/^matrix\(-?0, -?0, -?0, -?0,/.test(cs.transform) &&
+    (cs.content !== '""' ||
+      !transparent(cs.backgroundColor) ||
+      cs.backgroundImage !== 'none' ||
+      cs.boxShadow !== 'none' ||
+      SIDES.some((s) => parseFloat(cs.getPropertyValue(`border-${s}-width`)) > 0));
+
+  // Where an absolutely positioned pseudo-element (as Carbon's are) sits:
+  // offsets are from the padding box of the nearest positioned ancestor,
+  // which can be its own element. Transforms are ignored. Others flow with
+  // the content and can't be located, so this returns null.
+  const pseudoRect = (el, cs) => {
+    if (cs.position !== 'absolute') return null;
+    let origin = { left: -scrollX, top: -scrollY };
+    for (let node = el; node; node = parentOf(node)) {
+      const s = getComputedStyle(node);
+      if (s.position === 'static' && s.transform === 'none') continue;
+      const r = node.getBoundingClientRect();
+      origin = { left: r.left + node.clientLeft, top: r.top + node.clientTop };
+      break;
+    }
+    const n = (prop) => parseFloat(cs.getPropertyValue(prop)) || 0;
+    // Computed width and height are the border box only with border-box sizing
+    const extra = (a, b) =>
+      cs.boxSizing === 'border-box' ? 0 : [a, b].reduce((t, s) => t + n(`padding-${s}`) + n(`border-${s}-width`), 0);
+    return new DOMRect(
+      origin.left + n('left') + n('margin-left'),
+      origin.top + n('top') + n('margin-top'),
+      n('width') + extra('left', 'right'),
+      n('height') + extra('top', 'bottom')
+    );
+  };
+
+  // The painted pseudo-element under the pointer, of the element under it or
+  // a near ancestor (a label's checkbox box can sit under the label's text).
+  // The smallest wins, so a check mark beats its box.
+  const pseudoAt = (el, x, y) => {
+    let best = null;
+    for (let node = el, depth = 0; node && depth < 4; node = parentOf(node), depth++) {
+      for (const pseudo of PSEUDOS) {
+        const cs = getComputedStyle(node, pseudo);
+        const r = paints(cs) && pseudoRect(node, cs);
+        if (!r || x < r.left || x > r.right || y < r.top || y > r.bottom) continue;
+        const area = r.width * r.height;
+        if (!best || area < best.area) best = { target: pseudoTarget(node, pseudo), area };
+      }
+    }
+    return best?.target ?? null;
+  };
+
   // Whether the area under the pointer looks dark, from the first mostly
   // opaque background behind it. Following the pointer handles pages with
   // light and dark regions (Storybook's dark sidebar next to a white canvas,
   // Carbon's cds--g100 zones). Pages that paint nothing fall back to their
   // color-scheme.
   const pageIsDark = (start) => {
-    for (let node = start ?? document.body; node; node = parentOf(node)) {
+    for (let node = ownerOf(start) ?? document.body; node; node = parentOf(node)) {
       const bg = getComputedStyle(node).backgroundColor;
       if (transparent(bg)) continue;
       // Skip faint tints such as hover highlights; they don't set the tone
@@ -608,7 +713,7 @@
   // ---------------------------------------------------------------------------
   // Specs for one element: { typography: rows, color: rows, ... }
 
-  const typographyRows = (el, cs) => {
+  const typographyRows = (el, cs, pseudo) => {
     const size = parseFloat(cs.fontSize);
     const weight = Number(cs.fontWeight);
     const lineHeight = cs.lineHeight === 'normal' ? null : parseFloat(cs.lineHeight);
@@ -618,7 +723,7 @@
     }`;
     const row = { label: 'Type', value };
 
-    const decl = declared(el, ['font-size', 'font'], true);
+    const decl = declared(el, ['font-size', 'font'], true, pseudo);
     // Same check as colors: the token's size must be the size in use
     const toPx = (v) =>
       parseFloat(v) * (/rem\s*$/.test(v) ? parseFloat(getComputedStyle(document.documentElement).fontSize) : 1);
@@ -648,27 +753,21 @@
     return [row, { label: 'Family', value: cs.fontFamily.split(',')[0].replace(/["']/g, '') }];
   };
 
-  const colorRows = (el, cs) => {
+  const colorRows = (el, cs, pseudo) => {
     const index = colorIndex(el);
-    const rows = [colorRow('Text', cs.color, declared(el, ['color'], true), index, 'text')];
+    const rows = [colorRow('Text', cs.color, declared(el, ['color'], true, pseudo), index, 'text')];
     // Transparent backgrounds show whatever is behind; report the first
-    // ancestor that paints one
-    for (let node = el; node; node = parentOf(node)) {
-      const bg = getComputedStyle(node).backgroundColor;
+    // ancestor that paints one, after a pseudo-element's own
+    const layers = pseudo ? [[el, pseudo]] : [];
+    for (let node = el; node; node = parentOf(node)) layers.push([node, '']);
+    const props = ['background-color', 'background'];
+    for (const [node, p] of layers) {
+      const bg = getComputedStyle(node, p).backgroundColor;
       if (transparent(bg)) continue;
-      const row = colorRow(
-        'Background',
-        bg,
-        firstValue(winningStyle(node, ['background-color', 'background']), [
-          'background-color',
-          'background',
-        ]),
-        index,
-        'background'
-      );
-      if (node !== el) row.note = `from ${describe(node)}`;
+      const row = colorRow('Background', bg, firstValue(winningStyle(node, props, p), props), index, 'background');
+      if (node !== el || p !== pseudo) row.note = `from ${describe(node)}`;
       rows.push(row);
-      if (hasOwnText(el)) rows.push(contrastRow(cs.color, bg, cs));
+      if (pseudo ? /^"\s*[^\s"]/.test(cs.content) : hasOwnText(el)) rows.push(contrastRow(cs.color, bg, cs));
       break;
     }
     if (Number(cs.opacity) < 1) rows.push({ label: 'Opacity', value: cs.opacity });
@@ -678,10 +777,10 @@
   const collapse4 = ([t, r, b, l]) =>
     r === l ? (t === b ? (t === r ? [t] : [t, r]) : [t, r, b]) : [t, r, b, l];
 
-  const boxRow = (el, cs, prop, label) => {
+  const boxRow = (el, cs, prop, label, pseudo) => {
     const values = SIDES.map((side) => parseFloat(cs.getPropertyValue(`${prop}-${side}`)) || 0);
     if (values.every((v) => v === 0)) return null;
-    const names = values.map((v, i) => (v ? cdsVar(declaredSide(el, cs, prop, i)) : null));
+    const names = values.map((v, i) => (v ? cdsVar(declaredSide(el, cs, prop, i, pseudo)) : null));
     const statuses = values.map((v, i) =>
       !v ? null : names[i] ? 'token' : spacingToken(v) ? 'match' : 'custom'
     );
@@ -698,8 +797,8 @@
     };
   };
 
-  const spacingRows = (el, cs) => {
-    const rows = [boxRow(el, cs, 'padding', 'Padding'), boxRow(el, cs, 'margin', 'Margin')];
+  const spacingRows = (el, cs, pseudo) => {
+    const rows = [boxRow(el, cs, 'padding', 'Padding', pseudo), boxRow(el, cs, 'margin', 'Margin', pseudo)];
     if (/flex|grid/.test(cs.display)) {
       for (const [prop, label] of [
         ['row-gap', 'Row gap'],
@@ -707,7 +806,7 @@
       ]) {
         const v = parseFloat(cs.getPropertyValue(prop));
         if (!v) continue;
-        const name = cdsVar(declared(el, [prop, 'gap']));
+        const name = cdsVar(declared(el, [prop, 'gap'], false, pseudo));
         const match = spacingToken(v);
         rows.push({
           label,
@@ -720,7 +819,7 @@
     return rows.filter(Boolean);
   };
 
-  const borderRows = (el, cs) => {
+  const borderRows = (el, cs, pseudo) => {
     const rows = [];
     const index = colorIndex(el);
     const sides = SIDES.filter(
@@ -736,7 +835,7 @@
       const row = colorRow(
         sides.length === 4 && !mixed ? 'Border' : `Border ${mixed ? side : sides.join('/')}`,
         color,
-        declared(el, borderColorProps(cs, SIDES.indexOf(side))),
+        declared(el, borderColorProps(cs, SIDES.indexOf(side)), false, pseudo),
         index,
         'border'
       );
@@ -749,25 +848,44 @@
     const radii = CORNERS.map((c) => cs.getPropertyValue(`border-${c}-radius`).trim());
     const sizes = radii.map((r) => (r.includes('%') ? null : parseFloat(r) || 0));
     if (radii.some((r) => parseFloat(r) > 0)) {
-      const names = radii.map((r, i) => (parseFloat(r) > 0 ? cdsVar(declaredCorner(el, cs, i)) : null));
+      const names = radii.map((r, i) => (parseFloat(r) > 0 ? cdsVar(declaredCorner(el, cs, i, pseudo)) : null));
       const statuses = sizes.map((v, i) =>
         names[i] ? 'token' : v === 0 ? null : v != null && radiusToken(v) ? 'match' : 'custom'
       );
       const tokens = sizes.map((v, i) =>
         names[i] ? `$${names[i]}` : v === 0 ? '0' : v != null && radiusToken(v) ? `$${radiusToken(v)}` : radii[i]
       );
+      // The border eats into the curve: the inner (padding edge) radius is
+      // the outer one less the left/right border across and the top/bottom
+      // border down, an oval when they differ
+      const widths = SIDES.map((s) => parseFloat(cs.getPropertyValue(`border-${s}-width`)) || 0);
+      const corners = sizes.map((v, i) => {
+        if (v == null) return radii[i];
+        if (v >= RADIUS_MAX) return 'pill';
+        const across = fmt(Math.max(0, v - widths[i === 0 || i === 3 ? 3 : 1]));
+        const down = fmt(Math.max(0, v - widths[i < 2 ? 0 : 2]));
+        const inner = across === down ? across : `${across}×${down}`;
+        return inner === fmt(v) ? `${fmt(v)}px` : `${inner}/${fmt(v)}px`;
+      });
       rows.push({
         label: 'Radius',
-        value: collapse4(sizes.map((v, i) => (v == null ? radii[i] : v >= RADIUS_MAX ? 'pill' : `${fmt(v)}px`))).join(' '),
+        value: collapse4(corners).join(' '),
         token: collapse4(tokens).join(' '),
         status: statuses.includes('custom') ? 'custom' : statuses.includes('match') ? 'match' : 'token',
+        note: corners.some((c) => c.includes('/')) ? 'inner/outer' : undefined,
         raw: true, // token already carries the $
       });
     }
 
     // Focus rings: Carbon draws them as an outline or an inset box-shadow
     if (cs.outlineStyle !== 'none' && parseFloat(cs.outlineWidth) > 0) {
-      const row = colorRow('Outline', cs.outlineColor, declared(el, ['outline-color', 'outline']), index, 'focus');
+      const row = colorRow(
+        'Outline',
+        cs.outlineColor,
+        declared(el, ['outline-color', 'outline'], false, pseudo),
+        index,
+        'focus'
+      );
       const offset = parseFloat(cs.outlineOffset);
       row.note = `${px(cs.outlineWidth)}px ${cs.outlineStyle}${offset ? ` · offset ${fmt(offset)}` : ''}`;
       rows.push(row);
@@ -775,7 +893,7 @@
     if (cs.boxShadow !== 'none') {
       const color = cs.boxShadow.match(/rgba?\([^)]*\)/)?.[0];
       const shape = cs.boxShadow.replace(/rgba?\([^)]*\)\s*/, '').split(',')[0].trim();
-      const decl = declared(el, ['box-shadow']);
+      const decl = declared(el, ['box-shadow'], false, pseudo);
       const row = color
         ? colorRow('Shadow', color, decl, index, 'focus')
         : { label: 'Shadow', value: cs.boxShadow };
@@ -785,13 +903,13 @@
     return rows;
   };
 
-  const motionRows = (el, cs) => {
+  const motionRows = (el, cs, pseudo) => {
     const rows = [];
     const list = (value) => splitTop(value, /,/);
     const props = list(cs.transitionProperty);
     const durations = list(cs.transitionDuration);
     const easings = list(cs.transitionTimingFunction);
-    const declaredVar = cdsVar(declared(el, ['transition-duration', 'transition']));
+    const declaredVar = cdsVar(declared(el, ['transition-duration', 'transition'], false, pseudo));
     const ms = (value) => Math.round(parseFloat(value) * (value.endsWith('ms') ? 1 : 1000));
     const easing = (value) => EASINGS[value.match(/cubic-bezier\(([^)]+)\)/)?.[1].replace(/\s+/g, ' ')];
     props.forEach((prop, i) => {
@@ -822,6 +940,7 @@
 
   // Carbon size for controls (button, input heights) and icons
   const sizeName = (el, rect) => {
+    if (el instanceof PseudoTarget) return null;
     // Hovering an icon usually lands on its <path>; size the <svg> around it
     const svg = el instanceof SVGSVGElement ? el : el.ownerSVGElement;
     if (svg) {
@@ -853,17 +972,19 @@
 
   const inspect = (el) => {
     if (!specCache.has(el)) {
-      const cs = getComputedStyle(el);
+      const owner = ownerOf(el);
+      const pseudo = pseudoOf(el);
+      const cs = getComputedStyle(owner, pseudo);
       const safe = (fn) => {
         try {
-          return fn(el, cs);
+          return fn(owner, cs, pseudo);
         } catch (error) {
           console.warn('Ruler: could not read specs', error);
           return [];
         }
       };
       specCache.set(el, {
-        component: component(el),
+        component: component(owner),
         typography: safe(typographyRows),
         color: safe(colorRows),
         spacing: safe(spacingRows),
@@ -979,7 +1100,7 @@
   // Margin and padding as filled bands, like the DevTools box model
   const drawSpacing = (el) => {
     const r = el.getBoundingClientRect();
-    const cs = getComputedStyle(el);
+    const cs = getComputedStyle(ownerOf(el), pseudoOf(el));
     const side = (prop) =>
       SIDES.map((s) => parseFloat(cs.getPropertyValue(prop.replace('*', s))) || 0);
     const [mt, mr, mb, ml] = side('margin-*');
@@ -1379,7 +1500,7 @@
   };
 
   const savePins = () => {
-    const pins = state.pins.map((p) => ({ path: pathTo(p.el), x: p.x, y: p.y }));
+    const pins = state.pins.map((p) => ({ path: pathTo(ownerOf(p.el)), pseudo: pseudoOf(p.el), x: p.x, y: p.y }));
     const storage = chrome.storage?.local;
     (pins.length ? storage?.set({ [pinsKey()]: pins }) : storage?.remove(pinsKey()))?.catch(() => {});
   };
@@ -1388,8 +1509,9 @@
     chrome.storage?.local.get(pinsKey()).then(
       ({ [pinsKey()]: saved }) => {
         if (!state.enabled || !Array.isArray(saved)) return;
-        for (const { path, x, y } of saved) {
-          const el = resolvePath(path);
+        for (const { path, pseudo, x, y } of saved) {
+          const owner = resolvePath(path);
+          const el = owner && PSEUDOS.includes(pseudo) ? pseudoTarget(owner, pseudo) : owner;
           if (el && !state.pins.some((p) => p.el === el)) pin(el, { x, y });
         }
         render();
@@ -1560,9 +1682,11 @@
       return;
     }
     state.inside = true;
-    if (target !== state.raw) {
-      state.raw = target;
-      state.hover = target;
+    // A pseudo-element under the pointer is picked instead of its element
+    const picked = (target && pseudoAt(target, event.clientX, event.clientY)) ?? target;
+    if (picked !== state.raw) {
+      state.raw = picked;
+      state.hover = picked;
       state.history = [];
     }
     render();
