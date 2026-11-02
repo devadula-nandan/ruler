@@ -96,8 +96,18 @@ styles, so switching stories doesn't need a restart.
 - **Border:** border color and width, radius, focus outline and box-shadow.
   Radius is matched against the Carbon v12 radius scale (`$border-radius-00`,
   `-02`, `-04`, `-08`, `-16`, `-24`, and `$border-radius-max` for pills).
+  With a border, each corner reads `inner/outer`: the outer edge's radius and
+  the inner (padding) edge's, which is the outer radius less the border
+  width. A 12px radius with a 4px border shows `8/12px`.
 - **Motion:** transition durations (`$duration-*`) and easings (standard,
   entrance, exit; productive or expressive), and animations.
+- **`::before` and `::after`:** Carbon draws checkbox and radio boxes, check
+  marks and some focus rings as pseudo-elements of a label. Hovering one
+  picks it like an element (`label.cds--checkbox-label::before`): inspect,
+  measure, freeze or pin it, and ArrowUp goes to its label. That works for
+  absolutely positioned ones, as Carbon's are; others can't be located.
+  Tokens are read from rules like `.label::before`. Transforms (a rotated
+  check mark) aren't applied to its box.
 - **Size:** the header shows Carbon control sizes (`size md` for a 40px tall
   control) and icon sizes (`icon 16`), also when hovering an icon's `<path>`.
 
